@@ -1,0 +1,1277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Argus Ground Station</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@19/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@19/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+        },
+      },
+    };
+  </script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, sans-serif; }
+    .scrollbar-thin::-webkit-scrollbar { width: 4px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+    .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #475569; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+    .animate-fade-in { animation: fadeIn 0.1s ease-out; }
+    /* Map grid pattern */
+    .map-grid { background-image: linear-gradient(rgba(71,85,105,0.15) 1px, transparent 1px), linear-gradient(90deg, rgba(71,85,105,0.15) 1px, transparent 1px); background-size: 40px 40px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useMemo, useEffect, useRef } = React;
+
+    /* ========== MOCK DATA ========== */
+    const MOCK_ROBOTS = {
+      "drone-alpha-01": {
+        id: "drone-alpha-01", name: "Alpha-1", robotType: "drone", status: "active",
+        position: { latitude: 34.0530, longitude: -118.2440, altitude: 55.2, heading: 45 },
+        speed: 12.3, autonomyTier: "assisted", lastCommandSource: "operator", lastCommandAt: Date.now() / 1000 - 120,
+        health: { batteryPercent: 78, signalStrength: 92, cpuUsage: 45, memoryUsage: 62 },
+      },
+      "drone-bravo-02": {
+        id: "drone-bravo-02", name: "Bravo-2", robotType: "drone", status: "active",
+        position: { latitude: 34.0515, longitude: -118.2420, altitude: 62.8, heading: 180 },
+        speed: 8.7, autonomyTier: "supervised", lastCommandSource: "ai", lastCommandAt: Date.now() / 1000 - 45,
+        health: { batteryPercent: 45, signalStrength: 88, cpuUsage: 52, memoryUsage: 58 },
+      },
+      "rover-charlie-01": {
+        id: "rover-charlie-01", name: "Charlie-1", robotType: "ground", status: "idle",
+        position: { latitude: 34.0525, longitude: -118.2450, altitude: 0, heading: 270 },
+        speed: 0, autonomyTier: "manual", lastCommandSource: "operator", lastCommandAt: Date.now() / 1000 - 600,
+        health: { batteryPercent: 92, signalStrength: 95, cpuUsage: 12, memoryUsage: 30 },
+      },
+      "rover-delta-02": {
+        id: "rover-delta-02", name: "Delta-2", robotType: "ground", status: "returning",
+        position: { latitude: 34.0540, longitude: -118.2430, altitude: 0, heading: 90 },
+        speed: 3.2, autonomyTier: "assisted", lastCommandSource: "operator", lastCommandAt: Date.now() / 1000 - 300,
+        health: { batteryPercent: 23, signalStrength: 78, cpuUsage: 38, memoryUsage: 45 },
+      },
+      "uuv-echo-01": {
+        id: "uuv-echo-01", name: "Echo-1", robotType: "underwater", status: "active",
+        position: { latitude: 34.0510, longitude: -118.2460, altitude: -15.3, heading: 135 },
+        speed: 2.1, autonomyTier: "autonomous", lastCommandSource: "ai", lastCommandAt: Date.now() / 1000 - 30,
+        health: { batteryPercent: 67, signalStrength: 65, cpuUsage: 55, memoryUsage: 70 },
+      },
+    };
+
+    const MOCK_SUGGESTIONS = [
+      { id: "sug-1", robotId: "drone-bravo-02", title: "Low Battery Warning", description: "Bravo-2 battery at 45%. Consider RTL within 15 minutes.", severity: "warning", source: "Battery Monitor", confidence: 0.92, reasoning: "Battery drain rate indicates ~18 minutes of flight time remaining. Wind conditions may increase consumption.", status: "pending", createdAt: Date.now() / 1000 - 60, expiresAt: Date.now() / 1000 + 300, proposedAction: { commandType: "return_home" } },
+      { id: "sug-2", robotId: "rover-delta-02", title: "Low Battery Critical", description: "Delta-2 battery at 23%. Immediate return recommended.", severity: "critical", source: "Battery Monitor", confidence: 0.98, reasoning: "Battery level critical. Unit may not have enough charge to complete return journey if delayed further.", status: "pending", createdAt: Date.now() / 1000 - 30, expiresAt: Date.now() / 1000 + 120, proposedAction: { commandType: "return_home" } },
+      { id: "sug-3", robotId: "uuv-echo-01", title: "Depth Optimization", description: "Echo-1 can improve sonar coverage by adjusting depth to -18m.", severity: "info", source: "Path Planner", confidence: 0.75, reasoning: "Current depth of 15.3m provides suboptimal sonar coverage. Analysis suggests 18m depth would improve coverage by ~12%.", status: "pending", createdAt: Date.now() / 1000 - 90, expiresAt: 0, proposedAction: { commandType: "dive", parameters: { depth: 18 } } },
+    ];
+
+    const MOCK_COMMANDS = [
+      { id: "cmd-1", robotId: "drone-alpha-01", commandType: "take_off", status: "completed", parameters: {} },
+      { id: "cmd-2", robotId: "drone-alpha-01", commandType: "goto", status: "completed", parameters: { latitude: 34.053, longitude: -118.244 } },
+      { id: "cmd-3", robotId: "drone-alpha-01", commandType: "set_speed", status: "completed", parameters: { speed: 12.0 } },
+      { id: "cmd-4", robotId: "drone-bravo-02", commandType: "take_off", status: "completed", parameters: {} },
+      { id: "cmd-5", robotId: "drone-bravo-02", commandType: "patrol", status: "sent", parameters: {} },
+      { id: "cmd-6", robotId: "rover-delta-02", commandType: "goto", status: "completed", parameters: { latitude: 34.054, longitude: -118.243 } },
+      { id: "cmd-7", robotId: "rover-delta-02", commandType: "return_home", status: "sent", parameters: {} },
+      { id: "cmd-8", robotId: "uuv-echo-01", commandType: "dive", status: "completed", parameters: { depth: 15 } },
+      { id: "cmd-9", robotId: "uuv-echo-01", commandType: "goto", status: "sent", parameters: { latitude: 34.051, longitude: -118.246 } },
+    ];
+
+    const MOCK_MISSIONS = [
+      { id: "msn-1", name: "Perimeter Sweep Alpha", status: "active", createdAt: Date.now() / 1000 - 1200, assignedRobots: ["drone-alpha-01", "drone-bravo-02"], waypoints: { "drone-alpha-01": [{ status: "completed" }, { status: "completed" }, { status: "active" }, { status: "pending" }, { status: "pending" }], "drone-bravo-02": [{ status: "completed" }, { status: "active" }, { status: "pending" }] } },
+      { id: "msn-2", name: "Harbor Surveillance", status: "active", createdAt: Date.now() / 1000 - 600, assignedRobots: ["uuv-echo-01"], waypoints: { "uuv-echo-01": [{ status: "completed" }, { status: "completed" }, { status: "active" }, { status: "pending" }] } },
+      { id: "msn-3", name: "Logistics Route B", status: "completed", createdAt: Date.now() / 1000 - 3600, assignedRobots: ["rover-charlie-01"], waypoints: { "rover-charlie-01": [{ status: "completed" }, { status: "completed" }] } },
+    ];
+
+    const MOCK_CHANGE_LOG = [
+      { id: "cl-1", robotId: "drone-bravo-02", oldTier: "assisted", newTier: "supervised", changedBy: "operator", timestamp: Date.now() / 1000 - 300 },
+      { id: "cl-2", robotId: "uuv-echo-01", oldTier: "supervised", newTier: "autonomous", changedBy: "operator", timestamp: Date.now() / 1000 - 200 },
+      { id: "cl-3", robotId: "__fleet__", oldTier: "manual", newTier: "assisted", changedBy: "operator", timestamp: Date.now() / 1000 - 500 },
+    ];
+
+    const MOCK_PAST_SUGGESTIONS = [
+      { id: "sug-old-1", robotId: "drone-alpha-01", title: "Optimize patrol path", severity: "info", status: "approved", createdAt: Date.now() / 1000 - 900 },
+      { id: "sug-old-2", robotId: "rover-charlie-01", title: "Low signal warning", severity: "warning", status: "rejected", createdAt: Date.now() / 1000 - 800 },
+      { id: "sug-old-3", robotId: "drone-alpha-01", title: "Wind advisory", severity: "warning", status: "approved", createdAt: Date.now() / 1000 - 700 },
+    ];
+
+    /* ========== ICONS (inline SVG) ========== */
+    const Icon = ({ d, size = 20, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d={d} />
+      </svg>
+    );
+
+    // Lucide icon paths
+    const icons = {
+      plane: <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/></svg>,
+      search: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>,
+      filter: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>,
+      chevronDown: <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>,
+      sparkles: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z"/><path d="M5 3v4"/><path d="M19 17v4"/><path d="M3 5h4"/><path d="M17 19h4"/></svg>,
+      menu: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="18" y2="18"/></svg>,
+      radio: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.4"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.4"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/><circle cx="12" cy="12" r="2"/></svg>,
+      alertCircle: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>,
+      bell: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>,
+      settings: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>,
+      x: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>,
+      xSmall: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>,
+      plus: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>,
+      checkCircle: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>,
+      alertTriangle: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>,
+      mapPin: <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>,
+    };
+
+    /* ========== CONSTANTS ========== */
+    const STATUS_DOT = {
+      active: "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.6)]",
+      idle: "bg-blue-400 shadow-[0_0_6px_rgba(96,165,250,0.5)]",
+      returning: "bg-amber-500 shadow-[0_0_6px_rgba(234,179,8,0.5)] animate-pulse",
+      error: "bg-rose-500 shadow-[0_0_6px_rgba(239,68,68,0.6)] animate-pulse",
+      offline: "bg-slate-600",
+    };
+    const TYPE_LABELS = { drone: "Drone", ground: "Rover", underwater: "UUV" };
+    const STATUS_ORDER = { error: 0, active: 1, returning: 2, idle: 3, offline: 4 };
+    const TIER_CONFIG = {
+      manual: { label: "MAN", bg: "bg-slate-500/15 border-slate-500/30", text: "text-slate-400" },
+      assisted: { label: "AST", bg: "bg-sky-500/15 border-sky-500/30", text: "text-sky-400" },
+      supervised: { label: "SUP", bg: "bg-amber-500/15 border-amber-500/30", text: "text-amber-400" },
+      autonomous: { label: "AUT", bg: "bg-emerald-500/15 border-emerald-500/30", text: "text-emerald-400" },
+    };
+    const SEVERITY_STYLES = {
+      critical: { border: "border-rose-500/40", icon: "!!!" },
+      warning: { border: "border-amber-500/40", icon: "!" },
+      info: { border: "border-sky-500/40", icon: "i" },
+    };
+    const STATUS_PILL = {
+      active: { bg: "bg-emerald-500/15 border-emerald-500/30", text: "text-emerald-400" },
+      idle: { bg: "bg-sky-500/15 border-sky-500/30", text: "text-sky-400" },
+      returning: { bg: "bg-amber-500/15 border-amber-500/30", text: "text-amber-400" },
+      error: { bg: "bg-rose-500/15 border-rose-500/30", text: "text-rose-400" },
+      offline: { bg: "bg-slate-500/15 border-slate-500/30", text: "text-slate-400" },
+    };
+
+    /* ========== SMALL COMPONENTS ========== */
+    function AutonomyBadge({ tier, size = "sm" }) {
+      const config = TIER_CONFIG[tier] || TIER_CONFIG.assisted;
+      const sizeClasses = size === "sm" ? "text-[9px] px-1.5 py-0" : "text-[11px] px-2 py-0.5";
+      return (
+        <span className={`font-bold tracking-wider rounded-full border ${config.bg} ${config.text} ${sizeClasses}`}>
+          {config.label}
+        </span>
+      );
+    }
+
+    function AutonomyTierSelector({ robotId, currentTier, onChangeTier }) {
+      const tiers = [
+        { value: "manual", label: "MAN", activeColor: "bg-slate-500/20 text-slate-300 border-slate-500/40" },
+        { value: "assisted", label: "AST", activeColor: "bg-sky-500/20 text-sky-300 border-sky-500/40" },
+        { value: "supervised", label: "SUP", activeColor: "bg-amber-500/20 text-amber-300 border-amber-500/40" },
+        { value: "autonomous", label: "AUT", activeColor: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" },
+      ];
+      return (
+        <div>
+          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Autonomy Tier</div>
+          <div className="flex gap-1">
+            {tiers.map((t) => (
+              <button key={t.value} onClick={() => onChangeTier(robotId, t.value)}
+                className={`flex-1 text-[11px] font-bold tracking-wide py-1.5 rounded-lg border transition-all duration-150 ${
+                  currentTier === t.value ? t.activeColor : "border-transparent hover:bg-slate-800/60 text-slate-500"
+                }`}>{t.label}</button>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
+    function AuthorityIndicator({ source, timestamp }) {
+      if (!source) return null;
+      const isAI = source === "ai";
+      const elapsed = timestamp > 0 ? Math.round((Date.now() / 1000 - timestamp)) : 0;
+      const timeAgo = elapsed < 60 ? `${elapsed}s ago` : elapsed < 3600 ? `${Math.floor(elapsed / 60)}m ago` : `${Math.floor(elapsed / 3600)}h ago`;
+      return (
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-slate-500">Last control:</span>
+          <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border ${isAI ? "bg-violet-500/15 border-violet-500/30 text-violet-400" : "bg-sky-500/15 border-sky-500/30 text-sky-400"}`}>
+            {isAI ? "AI" : "Operator"}
+          </span>
+          {timestamp > 0 && <span className="text-[11px] text-slate-600">{timeAgo}</span>}
+        </div>
+      );
+    }
+
+    function GaugeBar({ value, max, color }) {
+      const pct = Math.max(0, Math.min(100, (value / max) * 100));
+      return (
+        <div className="w-full h-1.5 bg-slate-700/60 rounded-full overflow-hidden">
+          <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${pct}%` }} />
+        </div>
+      );
+    }
+
+    function Stat({ icon, label, value, unit }) {
+      return (
+        <div className="flex items-center justify-between py-0.5">
+          <span className="text-[11px] text-slate-500 flex items-center gap-1.5"><span className="text-[10px]">{icon}</span>{label}</span>
+          <span className="text-[13px] text-slate-200">{value}{unit && <span className="text-[11px] text-slate-500 ml-1">{unit}</span>}</span>
+        </div>
+      );
+    }
+
+    /* ========== COUNTDOWN TIMER ========== */
+    function CountdownTimer({ suggestionId, autoExecuteAt, onOverride }) {
+      const [remaining, setRemaining] = useState(() => Math.max(0, autoExecuteAt - Date.now() / 1000));
+      const totalDuration = useRef(Math.max(1, autoExecuteAt - Date.now() / 1000));
+      const rafRef = useRef(0);
+
+      useEffect(() => {
+        const tick = () => {
+          const left = Math.max(0, autoExecuteAt - Date.now() / 1000);
+          setRemaining(left);
+          if (left > 0) rafRef.current = requestAnimationFrame(tick);
+        };
+        rafRef.current = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(rafRef.current);
+      }, [autoExecuteAt]);
+
+      const pct = remaining / totalDuration.current;
+      const radius = 16;
+      const circumference = 2 * Math.PI * radius;
+      const dashOffset = circumference * (1 - pct);
+
+      return (
+        <div className="flex items-center gap-2.5">
+          <div className="relative w-10 h-10 flex-shrink-0">
+            <svg width="40" height="40" viewBox="0 0 40 40">
+              <circle cx="20" cy="20" r={radius} fill="none" stroke="#3f3f46" strokeWidth="3" />
+              <circle cx="20" cy="20" r={radius} fill="none" stroke="#f59e0b" strokeWidth="3" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={dashOffset} transform="rotate(-90 20 20)" style={{ transition: "stroke-dashoffset 0.1s" }} />
+            </svg>
+            <span className="absolute inset-0 flex items-center justify-center text-[11px] font-bold text-amber-400">{Math.ceil(remaining)}</span>
+          </div>
+          <button onClick={() => onOverride && onOverride(suggestionId)} className="text-[11px] px-2.5 py-1 rounded-lg bg-rose-600/80 text-white hover:bg-rose-500 transition-colors">Override</button>
+        </div>
+      );
+    }
+
+    /* ========== COMMAND STATUS PILLS ========== */
+    const CMD_STATUS_PILLS = {
+      pending: { bg: "bg-amber-500/15 border-amber-500/30", text: "text-amber-400", label: "Pending" },
+      sent: { bg: "bg-sky-500/15 border-sky-500/30", text: "text-sky-400", label: "Sent" },
+      acknowledged: { bg: "bg-amber-500/15 border-amber-500/30", text: "text-amber-400", label: "Pending" },
+      completed: { bg: "bg-emerald-500/15 border-emerald-500/30", text: "text-emerald-400", label: "Completed" },
+      failed: { bg: "bg-rose-500/15 border-rose-500/30", text: "text-rose-400", label: "Failed" },
+    };
+
+    function CommandHistory({ robotId }) {
+      const robotCommands = MOCK_COMMANDS.filter((c) => c.robotId === robotId).slice(-5).reverse();
+      return (
+        <div>
+          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Recent Commands</div>
+          {robotCommands.length === 0 ? (
+            <div className="text-[13px] text-slate-600 py-3 text-center">No recent commands</div>
+          ) : (
+            <div className="space-y-1.5">
+              {robotCommands.map((cmd) => {
+                const pill = CMD_STATUS_PILLS[cmd.status] || CMD_STATUS_PILLS.pending;
+                const params = cmd.parameters && Object.keys(cmd.parameters).length > 0
+                  ? Object.entries(cmd.parameters).map(([k, v]) => `${k}: ${typeof v === "number" ? v.toFixed(2) : v}`).join(", ")
+                  : null;
+                return (
+                  <div key={cmd.id} className="flex items-center justify-between py-1.5 px-2.5 rounded-lg bg-slate-800/40">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] text-slate-300 font-mono truncate">{cmd.commandType}</div>
+                      {params && <div className="text-[11px] text-slate-600 truncate mt-0.5">{params}</div>}
+                    </div>
+                    <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border flex-shrink-0 ml-2 ${pill.bg} ${pill.text}`}>{pill.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ========== ALTITUDE INSET ========== */
+    function AltitudeInset({ robot, alertsOpen }) {
+      if (!robot) return null;
+      const WIDTH = 200, HEIGHT = 150, SEA_LEVEL_Y = 100, SCALE = 1;
+      const altitude = robot.position?.altitude ?? 0;
+      const clampY = (alt) => Math.max(8, Math.min(HEIGHT - 8, SEA_LEVEL_Y - alt * SCALE));
+      const markerY = clampY(altitude);
+      const isDrone = robot.robotType === "drone";
+      const isUUV = robot.robotType === "underwater";
+      const altLabel = isUUV ? `${Math.abs(altitude).toFixed(1)}m depth` : `${altitude.toFixed(1)}m alt`;
+
+      return (
+        <div className="absolute bottom-5 z-20 bg-slate-900 border border-slate-700/60 rounded-xl p-3 shadow-2xl transition-all duration-300" style={{ right: alertsOpen ? 356 : 16 }}>
+          <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">
+            {isDrone ? "Altitude" : isUUV ? "Depth" : "Elevation"}
+          </div>
+          <svg width={WIDTH} height={HEIGHT} className="block">
+            <defs>
+              <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#0c4a6e" stopOpacity="0.3" /><stop offset="100%" stopColor="#0c4a6e" stopOpacity="0.05" /></linearGradient>
+              <linearGradient id="waterGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#0369a1" stopOpacity="0.1" /><stop offset="100%" stopColor="#0369a1" stopOpacity="0.3" /></linearGradient>
+            </defs>
+            <rect x="0" y="0" width={WIDTH} height={SEA_LEVEL_Y} fill="url(#skyGrad)" />
+            {isUUV && <rect x="0" y={SEA_LEVEL_Y} width={WIDTH} height={HEIGHT - SEA_LEVEL_Y} fill="url(#waterGrad)" />}
+            <line x1="0" y1={SEA_LEVEL_Y} x2={WIDTH} y2={SEA_LEVEL_Y} stroke="#52525b" strokeWidth="1" strokeDasharray={isUUV ? "none" : "4 2"} />
+            <text x="4" y={SEA_LEVEL_Y - 4} fill="#71717a" fontSize="9" fontFamily="Inter, system-ui">{isUUV ? "Sea Level" : "Ground"}</text>
+            {[20, 40, 60].map((m) => { const y = SEA_LEVEL_Y - m * SCALE; if (y < 4 || y > HEIGHT - 4) return null; return (<g key={m}><line x1="0" y1={y} x2={WIDTH} y2={y} stroke="#3f3f46" strokeWidth="0.5" strokeDasharray="2 4" /><text x={WIDTH - 4} y={y - 2} fill="#52525b" fontSize="8" textAnchor="end" fontFamily="Inter, system-ui">{m}m</text></g>); })}
+            {isUUV && [-10, -20].map((m) => { const y = SEA_LEVEL_Y - m * SCALE; if (y < 4 || y > HEIGHT - 4) return null; return (<g key={m}><line x1="0" y1={y} x2={WIDTH} y2={y} stroke="#0e7490" strokeWidth="0.5" strokeDasharray="2 4" /><text x={WIDTH - 4} y={y - 2} fill="#0e7490" fontSize="8" textAnchor="end" fontFamily="Inter, system-ui">{Math.abs(m)}m</text></g>); })}
+            {isDrone && altitude > 0 && <line x1={WIDTH / 2} y1={markerY} x2={WIDTH / 2} y2={SEA_LEVEL_Y} stroke="#38bdf8" strokeWidth="1" strokeDasharray="3 2" opacity="0.5" />}
+            {isUUV && altitude < 0 && <line x1={WIDTH / 2} y1={SEA_LEVEL_Y} x2={WIDTH / 2} y2={markerY} stroke="#0ea5e9" strokeWidth="1" strokeDasharray="3 2" opacity="0.5" />}
+            <circle cx={WIDTH / 2} cy={markerY} r="5" fill={isDrone ? "#38bdf8" : isUUV ? "#0ea5e9" : "#22c55e"} />
+            <circle cx={WIDTH / 2} cy={markerY} r="8" fill="none" stroke={isDrone ? "#38bdf8" : isUUV ? "#0ea5e9" : "#22c55e"} strokeWidth="1" opacity="0.3" />
+            <text x={WIDTH / 2 + 14} y={markerY + 4} fill="#e4e4e7" fontSize="10" fontWeight="600" fontFamily="Inter, system-ui">{altLabel}</text>
+          </svg>
+          <div className="text-[11px] text-slate-500 mt-1 text-center truncate">{robot.name}</div>
+        </div>
+      );
+    }
+
+    /* ========== ROBOT ROW ========== */
+    function RobotRow({ robot, isSelected, onSelect }) {
+      const battPercent = robot.health?.batteryPercent ?? 0;
+      const battColor = battPercent > 50 ? "bg-emerald-500" : battPercent > 20 ? "bg-amber-500" : "bg-rose-500";
+      return (
+        <button onClick={() => onSelect(isSelected ? null : robot.id)}
+          className={`w-full text-left rounded-xl p-4 transition-all duration-200 ${
+            isSelected ? "bg-blue-500/10 border border-blue-500/30 shadow-lg shadow-blue-500/5"
+              : "hover:bg-slate-800/60 border border-transparent hover:border-slate-700/50"
+          }`}>
+          <div className="flex items-center gap-3">
+            <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${STATUS_DOT[robot.status] || "bg-slate-600"}`} />
+            <div className="flex-1 min-w-0">
+              <div className="text-base font-medium text-slate-200 truncate">{robot.name}</div>
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-xs text-slate-500">{TYPE_LABELS[robot.robotType] || robot.robotType}</span>
+                <AutonomyBadge tier={robot.autonomyTier || "assisted"} />
+              </div>
+            </div>
+            <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+              <span className="text-sm font-medium text-slate-300">{battPercent.toFixed(0)}%</span>
+              <div className="w-12 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                <div className={`h-full rounded-full ${battColor} transition-all duration-500`} style={{ width: `${battPercent}%` }} />
+              </div>
+            </div>
+          </div>
+        </button>
+      );
+    }
+
+    /* ========== DETAIL DRAWER ========== */
+    function DetailDrawer({ robot, onClose, onChangeTier }) {
+      if (!robot) return null;
+      const statusStyle = STATUS_PILL[robot.status] || STATUS_PILL.offline;
+      const battPercent = robot.health?.batteryPercent ?? 0;
+      const battColor = battPercent > 50 ? "bg-emerald-500" : battPercent > 20 ? "bg-amber-500" : "bg-rose-500";
+
+      const commands = robot.robotType === "drone"
+        ? [{ label: "Take Off", color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" }, { label: "Land", color: "bg-amber-500/10 text-amber-400 border-amber-500/20" }, { label: "Go To", color: "bg-sky-500/10 text-sky-400 border-sky-500/20" }, { label: "Hold", color: "bg-violet-500/10 text-violet-400 border-violet-500/20" }, { label: "RTL", color: "bg-orange-500/10 text-orange-400 border-orange-500/20" }]
+        : robot.robotType === "underwater"
+        ? [{ label: "Go To", color: "bg-sky-500/10 text-sky-400 border-sky-500/20" }, { label: "Surface", color: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" }, { label: "Dive", color: "bg-violet-500/10 text-violet-400 border-violet-500/20" }, { label: "Hold Depth", color: "bg-amber-500/10 text-amber-400 border-amber-500/20" }]
+        : [{ label: "Go To", color: "bg-sky-500/10 text-sky-400 border-sky-500/20" }, { label: "Stop", color: "bg-rose-500/10 text-rose-400 border-rose-500/20" }, { label: "RTB", color: "bg-amber-500/10 text-amber-400 border-amber-500/20" }];
+
+      return (
+        <div className="absolute top-0 left-0 bottom-0 w-[340px] z-30 bg-slate-900 border-r border-slate-800 flex flex-col">
+          <div className="flex items-start justify-between px-4 pt-4 pb-3 border-b border-slate-700/40 flex-shrink-0">
+            <div>
+              <div className="text-sm font-semibold text-slate-100">{robot.name}</div>
+              <div className="flex items-center gap-2 mt-1">
+                <span className={`text-[11px] font-medium capitalize px-2 py-0.5 rounded-full border ${statusStyle.bg} ${statusStyle.text}`}>{robot.status}</span>
+                <AutonomyBadge tier={robot.autonomyTier || "assisted"} size="sm" />
+                <span className="text-[11px] text-slate-500">{robot.id}</span>
+              </div>
+            </div>
+            <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg leading-none p-1 -mr-1 -mt-1 transition-colors">&times;</button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4 scrollbar-thin">
+            <div className="space-y-2.5">
+              <AutonomyTierSelector robotId={robot.id} currentTier={robot.autonomyTier || "assisted"} onChangeTier={onChangeTier} />
+              <AuthorityIndicator source={robot.lastCommandSource || ""} timestamp={robot.lastCommandAt || 0} />
+            </div>
+            <div>
+              <div className="flex justify-between text-[11px] mb-1.5">
+                <span className="text-slate-500 font-medium flex items-center gap-1.5"><span className="text-[10px]">{"\u26A1"}</span> Battery</span>
+                <span className="text-slate-300">{battPercent.toFixed(0)}%</span>
+              </div>
+              <GaugeBar value={battPercent} max={100} color={battColor} />
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Position</div>
+              <div className="space-y-0.5">
+                <Stat icon={"\uD83C\uDF10"} label="Lat" value={(robot.position?.latitude ?? 0).toFixed(5)} />
+                <Stat icon={"\uD83C\uDF10"} label="Lon" value={(robot.position?.longitude ?? 0).toFixed(5)} />
+                <Stat icon={"\uD83E\uDDED"} label="Heading" value={(robot.position?.heading ?? 0).toFixed(0)} unit="deg" />
+                <Stat icon={"\u23F1"} label="Speed" value={(robot.speed ?? 0).toFixed(1)} unit="m/s" />
+              </div>
+            </div>
+            {robot.robotType === "drone" && (
+              <div>
+                <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Drone</div>
+                <Stat icon={"\u2708"} label="Altitude" value={(robot.position?.altitude ?? 0).toFixed(1)} unit="m" />
+              </div>
+            )}
+            {robot.robotType === "underwater" && (
+              <div>
+                <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1.5">UUV</div>
+                <Stat icon={"\u2693"} label="Depth" value={Math.abs(robot.position?.altitude ?? 0).toFixed(1)} unit="m" />
+              </div>
+            )}
+            <div className="border-t border-slate-700/40 pt-3 space-y-2.5">
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Commands</div>
+              <div className="grid grid-cols-2 gap-2">
+                {commands.map((cmd) => (
+                  <button key={cmd.label} className={`px-3 py-2 text-[13px] font-medium rounded-xl border transition-colors ${cmd.color} hover:opacity-80`}>{cmd.label}</button>
+                ))}
+              </div>
+            </div>
+            <div className="border-t border-slate-700/40 pt-3">
+              <CommandHistory robotId={robot.id} />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ========== FLEET ALERT STACK ========== */
+    function FleetAlertStack({ suggestions, robots }) {
+      const robotList = Object.values(robots);
+      const lowBattery = robotList.filter((r) => (r.health?.batteryPercent ?? 100) < 25);
+      const lostComms = robotList.filter((r) => r.status === "offline");
+      const criticalAlerts = suggestions.filter((s) => s.status === "pending" && s.severity === "critical");
+      if (lowBattery.length === 0 && lostComms.length === 0 && criticalAlerts.length === 0) return null;
+      return (
+        <div className="mx-3 mb-2 space-y-1.5">
+          {criticalAlerts.length > 0 && (
+            <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-rose-500/10 border border-rose-500/25">
+              <span className="text-rose-400 text-[11px] font-bold">!!!</span>
+              <span className="text-[11px] text-rose-300">{criticalAlerts.length} critical alert{criticalAlerts.length > 1 ? "s" : ""}</span>
+            </div>
+          )}
+          {lowBattery.length > 0 && (
+            <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-amber-500/10 border border-amber-500/25">
+              <span className="text-amber-400 text-[11px]">{"\u26A1"}</span>
+              <span className="text-[11px] text-amber-300">{lowBattery.length} low battery: {lowBattery.map((r) => r.name).join(", ")}</span>
+            </div>
+          )}
+          {lostComms.length > 0 && (
+            <div className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-slate-500/10 border border-slate-500/25">
+              <span className="text-slate-400 text-[11px]">{"\uD83D\uDCE1"}</span>
+              <span className="text-[11px] text-slate-300">{lostComms.length} lost comms: {lostComms.map((r) => r.name).join(", ")}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* ========== SUGGESTION CARD (tier-aware) ========== */
+    function SuggestionCard({ suggestion, robots }) {
+      const [expanded, setExpanded] = useState(false);
+      const robot = robots[suggestion.robotId];
+      const tier = robot?.autonomyTier || "assisted";
+      const style = SEVERITY_STYLES[suggestion.severity] || SEVERITY_STYLES.info;
+      const timeLeft = suggestion.expiresAt > 0 ? Math.max(0, Math.round(suggestion.expiresAt - Date.now() / 1000)) : null;
+
+      const renderActions = () => {
+        if (suggestion.status !== "pending") {
+          return <span className={`text-[11px] capitalize ${suggestion.status === "approved" ? "text-emerald-400" : "text-slate-500"}`}>{suggestion.status}</span>;
+        }
+        if (tier === "autonomous") {
+          return <span className="text-[11px] font-medium px-2 py-0.5 rounded-full border bg-emerald-500/15 border-emerald-500/30 text-emerald-400">Auto-executed</span>;
+        }
+        if (tier === "supervised" && suggestion.proposedAction) {
+          return <CountdownTimer suggestionId={suggestion.id} autoExecuteAt={Date.now() / 1000 + 10} />;
+        }
+        return (
+          <>
+            <button className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-700/60 text-slate-400 hover:bg-slate-600/60 transition-colors">Dismiss</button>
+            {tier !== "manual" && suggestion.proposedAction && (
+              <button className="text-[11px] px-2.5 py-1 rounded-lg bg-sky-600 text-white hover:bg-sky-500 transition-colors">Approve</button>
+            )}
+          </>
+        );
+      };
+
+      return (
+        <div className={`rounded-xl border p-3.5 space-y-2.5 bg-slate-800/40 ${style.border}`}>
+          <div className="flex items-start gap-2.5">
+            <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-md bg-slate-700/50 text-slate-300">{style.icon}</span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[13px] font-medium text-slate-200 truncate">{suggestion.title}</div>
+              <div className="text-[11px] text-slate-400 mt-0.5">{suggestion.description}</div>
+            </div>
+            <div className="flex flex-col items-end gap-0.5 flex-shrink-0">
+              <span className="text-[11px] text-slate-500">{suggestion.source}</span>
+              {suggestion.confidence > 0 && <span className="text-[11px] text-slate-500">{(suggestion.confidence * 100).toFixed(0)}%</span>}
+            </div>
+          </div>
+          {expanded && suggestion.reasoning && (
+            <div className="text-[13px] text-slate-400 bg-slate-800/50 rounded-lg p-2.5">{suggestion.reasoning}</div>
+          )}
+          <div className="flex items-center gap-2">
+            <button onClick={() => setExpanded(!expanded)} className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors">{expanded ? "Less" : "More"}</button>
+            <div className="flex-1" />
+            {timeLeft !== null && tier !== "supervised" && <span className="text-[11px] text-slate-600">{timeLeft}s</span>}
+            {renderActions()}
+          </div>
+        </div>
+      );
+    }
+
+    /* ========== ALERTS PANEL ========== */
+    function AlertsPanel({ suggestions, robots, isOpen, onClose }) {
+      if (!isOpen) return null;
+      const allSuggestions = [...suggestions].sort((a, b) => {
+        const so = { critical: 0, warning: 1, info: 2 };
+        return (so[a.severity] ?? 2) - (so[b.severity] ?? 2) || b.createdAt - a.createdAt;
+      });
+      const pending = allSuggestions.filter((s) => s.status === "pending");
+      return (
+        <div className="absolute top-0 right-0 bottom-0 w-[340px] z-30 bg-slate-900 border-l border-slate-800 flex flex-col">
+          <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-slate-700/40">
+            <div>
+              <div className="text-sm font-semibold text-slate-200">Alerts</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">{pending.length} pending</div>
+            </div>
+            <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg leading-none p-1 transition-colors">&times;</button>
+          </div>
+          {/* Fleet alert stack */}
+          <div className="pt-3">
+            <FleetAlertStack suggestions={allSuggestions} robots={robots} />
+          </div>
+          <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2 scrollbar-thin">
+            {allSuggestions.length === 0 ? (
+              <div className="text-[13px] text-slate-500 text-center py-10">No alerts</div>
+            ) : (
+              allSuggestions.map((s) => <SuggestionCard key={s.id} suggestion={s} robots={robots} />)
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ========== SETTINGS PANEL ========== */
+    function SettingsPanel({ isOpen, onClose, fleetTier, onSetFleetTier, trailsEnabled, onToggleTrails }) {
+      if (!isOpen) return null;
+      const tiers = [{ value: "manual", label: "Manual" }, { value: "assisted", label: "Assisted" }, { value: "supervised", label: "Supervised" }, { value: "autonomous", label: "Autonomous" }];
+      return (
+        <div className="absolute top-0 right-0 bottom-0 w-[300px] z-30 bg-slate-900 border-l border-slate-800 flex flex-col">
+          <div className="flex items-center justify-between px-4 pt-4 pb-3 border-b border-slate-700/40">
+            <div className="text-sm font-semibold text-slate-200">Settings</div>
+            <button onClick={onClose} className="text-slate-500 hover:text-slate-300 text-lg leading-none p-1 transition-colors">&times;</button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 py-4 space-y-5 scrollbar-thin">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Map</div>
+              <label className="flex items-center justify-between cursor-pointer">
+                <span className="text-[13px] text-slate-300">Robot Trails</span>
+                <button onClick={onToggleTrails} className={`w-9 h-5 rounded-full transition-colors duration-200 ${trailsEnabled ? "bg-sky-600" : "bg-slate-700"}`}>
+                  <div className={`w-3.5 h-3.5 bg-white rounded-full shadow transition-transform duration-200 mx-0.5 ${trailsEnabled ? "translate-x-4" : "translate-x-0"}`} />
+                </button>
+              </label>
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Autonomy</div>
+              <div className="text-[13px] text-slate-300 mb-2">Fleet Default Tier</div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {tiers.map((t) => (
+                  <button key={t.value} onClick={() => onSetFleetTier(t.value)}
+                    className={`text-[11px] py-2 rounded-lg border transition-all duration-150 ${
+                      fleetTier === t.value ? "bg-sky-500/15 border-sky-500/40 text-sky-300" : "border-slate-700/50 text-slate-500 hover:text-slate-300 hover:border-slate-600"
+                    }`}>{t.label}</button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Display</div>
+              <div className="space-y-2 text-[13px] text-slate-400">
+                <div className="flex justify-between"><span>Theme</span><span className="text-slate-500">Dark</span></div>
+                <div className="flex justify-between"><span>Map Style</span><span className="text-slate-500">CARTO Dark</span></div>
+                <div className="flex justify-between"><span>Units</span><span className="text-slate-500">Metric</span></div>
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3">Keyboard Shortcuts</div>
+              <div className="space-y-1.5 text-[11px]">
+                <div className="flex justify-between"><span className="text-slate-400">Deselect robot</span><kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-500 border border-slate-700">Esc</kbd></div>
+                <div className="flex justify-between"><span className="text-slate-400">Next/Prev robot</span><div className="flex gap-1"><kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-500 border border-slate-700">&darr;</kbd><kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-500 border border-slate-700">&uarr;</kbd></div></div>
+                <div className="flex justify-between"><span className="text-slate-400">Toggle trails</span><kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-500 border border-slate-700">T</kbd></div>
+                <div className="flex justify-between"><span className="text-slate-400">Toggle alerts</span><kbd className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-500 border border-slate-700">A</kbd></div>
+              </div>
+            </div>
+            <div className="pt-3 border-t border-slate-700/40">
+              <div className="text-[11px] text-slate-600 text-center">Argus Ground Station v1.0</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ========== FLEET STATS PANEL ========== */
+    function FleetStatsPanel({ robots }) {
+      const robotList = Object.values(robots);
+      const total = robotList.length;
+      if (total === 0) return <div className="text-[13px] text-slate-500 text-center py-10">No fleet data available</div>;
+
+      const byStatus = robotList.reduce((acc, r) => { acc[r.status] = (acc[r.status] || 0) + 1; return acc; }, {});
+      const byType = robotList.reduce((acc, r) => { acc[r.robotType] = (acc[r.robotType] || 0) + 1; return acc; }, {});
+      const avgBattery = robotList.reduce((sum, r) => sum + (r.health?.batteryPercent ?? 0), 0) / total;
+      const lowBatt = robotList.filter((r) => (r.health?.batteryPercent ?? 100) < 25).length;
+      const avgSignal = robotList.reduce((sum, r) => sum + (r.health?.signalStrength ?? 0), 0) / total;
+      const activeRobots = robotList.filter((r) => r.status === "active");
+      const avgSpeed = activeRobots.length > 0 ? activeRobots.reduce((sum, r) => sum + (r.speed ?? 0), 0) / activeRobots.length : 0;
+
+      const MiniBar = ({ label, value, max, color }) => {
+        const pct = max > 0 ? Math.round((value / max) * 100) : 0;
+        return (
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] text-slate-500 w-16 shrink-0">{label}</span>
+            <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+              <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${pct}%` }} />
+            </div>
+            <span className="text-[11px] text-slate-400 w-8 text-right">{value}</span>
+          </div>
+        );
+      };
+
+      // AI stats
+      const allSuggestions = [...MOCK_SUGGESTIONS, ...MOCK_PAST_SUGGESTIONS];
+      const approved = allSuggestions.filter((s) => s.status === "approved").length;
+      const rejected = allSuggestions.filter((s) => s.status === "rejected").length;
+      const pendingCount = allSuggestions.filter((s) => s.status === "pending").length;
+      const totalSuggestions = allSuggestions.length;
+
+      // Mission status colors
+      const missionStatusColor = { active: "bg-emerald-500", paused: "bg-amber-500", completed: "bg-sky-500", aborted: "bg-rose-500", draft: "bg-slate-600" };
+
+      return (
+        <div className="space-y-4">
+          {/* Quick stats grid */}
+          <div className="grid grid-cols-2 gap-2">
+            <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
+              <div className="text-[11px] text-slate-500 mb-1">Fleet Size</div>
+              <div className="text-xl font-bold text-slate-100">{total}</div>
+            </div>
+            <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
+              <div className="text-[11px] text-slate-500 mb-1">Avg Battery</div>
+              <div className={`text-xl font-bold ${avgBattery > 50 ? "text-emerald-400" : avgBattery > 25 ? "text-amber-400" : "text-rose-400"}`}>{avgBattery.toFixed(0)}%</div>
+              {lowBatt > 0 && <div className="text-[11px] text-slate-600 mt-0.5">{lowBatt} low</div>}
+            </div>
+            <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
+              <div className="text-[11px] text-slate-500 mb-1">Avg Signal</div>
+              <div className="text-xl font-bold text-sky-400">{avgSignal.toFixed(0)}%</div>
+            </div>
+            <div className="bg-slate-800/50 rounded-lg p-3 border border-slate-700/30">
+              <div className="text-[11px] text-slate-500 mb-1">Avg Speed</div>
+              <div className="text-xl font-bold text-slate-100">{avgSpeed.toFixed(1)}</div>
+              <div className="text-[11px] text-slate-600 mt-0.5">m/s (active)</div>
+            </div>
+          </div>
+
+          {/* Status breakdown */}
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Status</div>
+            <div className="space-y-1.5">
+              <MiniBar label="Active" value={byStatus.active || 0} max={total} color="bg-emerald-500" />
+              <MiniBar label="Idle" value={byStatus.idle || 0} max={total} color="bg-sky-500" />
+              <MiniBar label="Returning" value={byStatus.returning || 0} max={total} color="bg-amber-500" />
+              <MiniBar label="Error" value={byStatus.error || 0} max={total} color="bg-rose-500" />
+              <MiniBar label="Offline" value={byStatus.offline || 0} max={total} color="bg-slate-500" />
+            </div>
+          </div>
+
+          {/* Composition breakdown */}
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Composition</div>
+            <div className="space-y-1.5">
+              <MiniBar label="Drones" value={byType.drone || 0} max={total} color="bg-emerald-500" />
+              <MiniBar label="Rovers" value={byType.ground || 0} max={total} color="bg-violet-500" />
+              <MiniBar label="UUVs" value={byType.underwater || 0} max={total} color="bg-cyan-500" />
+            </div>
+          </div>
+
+          {/* Battery burn-down with time estimates */}
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Battery Levels</div>
+            <div className="space-y-1">
+              {[...robotList].sort((a, b) => (a.health?.batteryPercent ?? 0) - (b.health?.batteryPercent ?? 0)).map((r) => {
+                const batt = r.health?.batteryPercent ?? 0;
+                const color = batt > 50 ? "bg-emerald-500" : batt > 20 ? "bg-amber-500" : "bg-rose-500";
+                const minsLeft = batt <= 15 ? 0 : Math.round((batt - 15) * 1.2);
+                return (
+                  <div key={r.id} className="flex items-center gap-2">
+                    <span className="text-[10px] text-slate-500 w-14 truncate shrink-0">{r.name}</span>
+                    <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${color} transition-all duration-500`} style={{ width: `${batt}%` }} />
+                    </div>
+                    <span className={`text-[10px] w-12 text-right ${batt < 25 ? "text-rose-400" : "text-slate-400"}`}>{batt.toFixed(0)}%</span>
+                    <span className="text-[9px] text-slate-600 w-10 text-right">{minsLeft > 0 ? `~${minsLeft}m` : "crit"}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Mission Timeline */}
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">Missions</div>
+            {MOCK_MISSIONS.length === 0 ? (
+              <div className="text-[11px] text-slate-600 text-center py-4">No missions yet</div>
+            ) : (
+              <div className="space-y-1.5">
+                {[...MOCK_MISSIONS].sort((a, b) => b.createdAt - a.createdAt).map((m) => {
+                  const totalWps = Object.values(m.waypoints || {}).reduce((sum, wps) => sum + wps.length, 0);
+                  const completedWps = Object.values(m.waypoints || {}).reduce((sum, wps) => sum + wps.filter((w) => w.status === "completed").length, 0);
+                  const pct = totalWps > 0 ? Math.round((completedWps / totalWps) * 100) : 0;
+                  return (
+                    <div key={m.id} className="bg-slate-800/40 rounded-lg p-2.5 border border-slate-700/30">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[11px] text-slate-300 font-medium truncate">{m.name}</span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded-full capitalize text-white ${missionStatusColor[m.status] || "bg-slate-600"}`}>{m.status}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-1 bg-slate-700 rounded-full overflow-hidden">
+                          <div className="h-full rounded-full bg-sky-500 transition-all duration-500" style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="text-[10px] text-slate-500">{pct}%</span>
+                      </div>
+                      <div className="text-[10px] text-slate-600 mt-1">{m.assignedRobots?.length ?? 0} robots, {completedWps}/{totalWps} waypoints</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* AI Activity */}
+          <div>
+            <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">AI Activity</div>
+            <div className="grid grid-cols-4 gap-1.5 mb-3">
+              <div className="bg-slate-800/50 rounded-md p-2 text-center border border-slate-700/30">
+                <div className="text-sm font-bold text-slate-100">{totalSuggestions}</div>
+                <div className="text-[9px] text-slate-500">Total</div>
+              </div>
+              <div className="bg-slate-800/50 rounded-md p-2 text-center border border-slate-700/30">
+                <div className="text-sm font-bold text-emerald-400">{approved}</div>
+                <div className="text-[9px] text-slate-500">Approved</div>
+              </div>
+              <div className="bg-slate-800/50 rounded-md p-2 text-center border border-slate-700/30">
+                <div className="text-sm font-bold text-rose-400">{rejected}</div>
+                <div className="text-[9px] text-slate-500">Rejected</div>
+              </div>
+              <div className="bg-slate-800/50 rounded-md p-2 text-center border border-slate-700/30">
+                <div className="text-sm font-bold text-amber-400">{pendingCount}</div>
+                <div className="text-[9px] text-slate-500">Pending</div>
+              </div>
+            </div>
+            {/* Acceptance rate */}
+            {(approved + rejected) > 0 && (
+              <div className="mb-3">
+                <div className="flex justify-between text-[10px] mb-1">
+                  <span className="text-slate-500">Acceptance Rate</span>
+                  <span className="text-slate-300">{Math.round((approved / (approved + rejected)) * 100)}%</span>
+                </div>
+                <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden flex">
+                  <div className="h-full bg-emerald-500 transition-all duration-500" style={{ width: `${(approved / (approved + rejected)) * 100}%` }} />
+                  <div className="h-full bg-rose-500 transition-all duration-500" style={{ width: `${(rejected / (approved + rejected)) * 100}%` }} />
+                </div>
+              </div>
+            )}
+            {/* Recent tier changes */}
+            {MOCK_CHANGE_LOG.length > 0 && (
+              <div>
+                <div className="text-[10px] text-slate-500 mb-1.5">Recent Tier Changes</div>
+                <div className="space-y-1">
+                  {[...MOCK_CHANGE_LOG].reverse().map((entry) => (
+                    <div key={entry.id} className="flex items-center gap-2 text-[10px]">
+                      <span className="text-slate-500 w-16 truncate">{entry.robotId === "__fleet__" ? "Fleet" : entry.robotId.slice(0, 8)}</span>
+                      <span className="text-slate-600">{entry.oldTier}</span>
+                      <span className="text-slate-500">{"\u2192"}</span>
+                      <span className="text-slate-300">{entry.newTier}</span>
+                      <span className="text-slate-600 ml-auto">{entry.changedBy}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    /* ========== MISSION PLAN DIALOG ========== */
+    function MissionPlanDialog({ open, onClose }) {
+      const [objective, setObjective] = useState("");
+      const [constraintInput, setConstraintInput] = useState("");
+      const [constraints, setConstraints] = useState([]);
+      const [roeInput, setRoeInput] = useState("");
+      const [roe, setRoe] = useState([]);
+      const [selectedRobots, setSelectedRobots] = useState([]);
+      const robotList = Object.values(MOCK_ROBOTS).filter((r) => r.status !== "offline");
+
+      if (!open) return null;
+      const addConstraint = () => { if (constraintInput.trim()) { setConstraints((c) => [...c, constraintInput.trim()]); setConstraintInput(""); } };
+      const addRoe = () => { if (roeInput.trim()) { setRoe((r) => [...r, roeInput.trim()]); setRoeInput(""); } };
+      const toggleRobot = (id) => setSelectedRobots((sel) => sel.includes(id) ? sel.filter((r) => r !== id) : [...sel, id]);
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+          <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex items-start justify-between px-8 pt-8 pb-6 border-b border-slate-800">
+              <div>
+                <h2 className="text-2xl font-semibold text-white flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500/20 to-indigo-500/20 border border-violet-500/30 flex items-center justify-center">
+                    <span className="text-violet-400">{icons.sparkles}</span>
+                  </div>
+                  AI Mission Planning
+                </h2>
+                <p className="text-sm text-slate-400 mt-2 ml-[52px]">Describe your mission and let AI generate an optimal plan</p>
+              </div>
+              <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-200">{icons.x}</button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6 scrollbar-thin">
+              <div>
+                <label className="block text-sm font-medium text-slate-200 mb-3">Objective <span className="text-rose-400">*</span></label>
+                <textarea value={objective} onChange={(e) => setObjective(e.target.value)} placeholder="Describe the mission objective in detail..." className="w-full px-4 py-3.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none transition-all leading-relaxed" rows={4} />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-200 mb-3">Robots <span className="text-xs text-slate-500 font-normal">({selectedRobots.length || "all"} selected)</span></label>
+                <div className="flex flex-wrap gap-2">
+                  {robotList.map((r) => (
+                    <button key={r.id} onClick={() => toggleRobot(r.id)} className={`px-4 py-2.5 rounded-lg border text-sm font-medium transition-all ${selectedRobots.includes(r.id) ? "border-blue-500/40 bg-blue-500/10 text-blue-300 shadow-lg shadow-blue-500/5" : "border-slate-700 bg-slate-800/50 text-slate-300 hover:border-slate-600 hover:bg-slate-800"}`}>{r.name}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-200 mb-3">Constraints</label>
+                <div className="flex gap-2 mb-3">
+                  <input value={constraintInput} onChange={(e) => setConstraintInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addConstraint()} placeholder="Add a constraint..." className="flex-1 px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all" />
+                  <button onClick={addConstraint} className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition-colors flex items-center gap-2 text-sm font-medium">{icons.plus} Add</button>
+                </div>
+                {constraints.length > 0 && (
+                  <div className="space-y-2">
+                    {constraints.map((c, i) => (
+                      <div key={i} className="flex items-center gap-3 px-4 py-3 bg-slate-800/50 border border-slate-700/50 rounded-lg group hover:bg-slate-800 transition-colors">
+                        <span className="flex-1 text-sm text-slate-300">{c}</span>
+                        <button onClick={() => setConstraints((cs) => cs.filter((_, j) => j !== i))} className="p-1.5 hover:bg-slate-700 rounded-md transition-colors text-slate-500 hover:text-slate-300 opacity-0 group-hover:opacity-100">{icons.xSmall}</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-200 mb-3">Rules of Engagement</label>
+                <div className="flex gap-2 mb-3">
+                  <input value={roeInput} onChange={(e) => setRoeInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addRoe()} placeholder="Add a rule..." className="flex-1 px-4 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all" />
+                  <button onClick={addRoe} className="px-4 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded-lg transition-colors flex items-center gap-2 text-sm font-medium">{icons.plus} Add</button>
+                </div>
+                {roe.length > 0 && (
+                  <div className="space-y-2">
+                    {roe.map((r, i) => (
+                      <div key={i} className="flex items-center gap-3 px-4 py-3 bg-slate-800/50 border border-slate-700/50 rounded-lg group hover:bg-slate-800 transition-colors">
+                        <span className="flex-1 text-sm text-slate-300">{r}</span>
+                        <button onClick={() => setRoe((rs) => rs.filter((_, j) => j !== i))} className="p-1.5 hover:bg-slate-700 rounded-md transition-colors text-slate-500 hover:text-slate-300 opacity-0 group-hover:opacity-100">{icons.xSmall}</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 px-8 py-6 border-t border-slate-800">
+              <button onClick={onClose} className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors text-sm font-medium">Cancel</button>
+              <button className={`px-6 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 ${objective.trim() ? "bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white shadow-lg shadow-violet-500/20" : "bg-slate-700 text-slate-500 cursor-not-allowed"}`}>
+                <span className="w-4 h-4">{icons.sparkles}</span> Generate Plan
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ========== MISSION PLAN REVIEW ========== */
+    function MissionPlanReview({ open, onClose }) {
+      if (!open) return null;
+      const mockPlan = {
+        name: "Urban Surveillance Sweep",
+        estimatedDurationMinutes: 45,
+        assignments: [
+          { robotId: "Alpha-1", role: "Primary Scout", rationale: "Fastest drone with best camera coverage. Assigned to high-altitude sweep of sector A.", waypoints: [1, 2, 3, 4, 5] },
+          { robotId: "Bravo-2", role: "Overwatch", rationale: "Secondary drone providing overwatch and redundant coverage from sector B.", waypoints: [1, 2, 3] },
+          { robotId: "Charlie-1", role: "Ground Support", rationale: "Ground-level monitoring of key intersections and communication relay.", waypoints: [1, 2] },
+        ],
+        contingencies: [
+          { trigger: "Battery below 20% on any unit", action: "Immediately RTL and transfer coverage to nearest available unit" },
+          { trigger: "Loss of communication > 30s", action: "Enter autonomous hold pattern and attempt reconnection on backup frequency" },
+        ],
+      };
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6">
+          <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+          <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-h-[85vh] flex flex-col">
+            <div className="flex items-start justify-between px-8 pt-8 pb-6 border-b border-slate-800">
+              <div>
+                <h2 className="text-2xl font-semibold text-white flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center">
+                    <span className="text-emerald-400">{icons.checkCircle}</span>
+                  </div>
+                  Mission Plan Review
+                </h2>
+                <p className="text-sm text-slate-400 mt-2 ml-[52px]">Review and approve the AI-generated mission plan</p>
+              </div>
+              <button onClick={onClose} className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400 hover:text-slate-200">{icons.x}</button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-8 py-6 space-y-6 scrollbar-thin">
+              <div className="space-y-3">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-100">{mockPlan.name}</h3>
+                  <div className="flex items-center gap-4 mt-2 text-sm text-slate-400">
+                    <span>Estimated Duration: {mockPlan.estimatedDurationMinutes} minutes</span>
+                    <span>•</span>
+                    <span>{mockPlan.assignments.length} robots assigned</span>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <h4 className="text-sm font-semibold text-slate-300 mb-4 uppercase tracking-wider">Robot Assignments</h4>
+                <div className="space-y-3">
+                  {mockPlan.assignments.map((a, i) => (
+                    <div key={i} className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-5 hover:bg-slate-800 transition-colors">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-base font-medium text-slate-100">{a.robotId}</span>
+                        <span className="px-3 py-1 rounded-full bg-blue-500/15 text-blue-300 border border-blue-500/25 text-xs font-medium uppercase tracking-wide">{a.role}</span>
+                      </div>
+                      <p className="text-sm text-slate-400 leading-relaxed mb-3">{a.rationale}</p>
+                      <div className="flex items-center gap-2 text-xs text-slate-500">
+                        <div className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                        {a.waypoints.length} waypoints planned
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <h4 className="text-sm font-semibold text-slate-300 mb-4 uppercase tracking-wider">Contingency Plans</h4>
+                <div className="space-y-3">
+                  {mockPlan.contingencies.map((c, i) => (
+                    <div key={i} className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-5">
+                      <div className="space-y-2 text-sm">
+                        <div className="flex items-start gap-2"><span className="font-semibold text-amber-400 shrink-0">If:</span><span className="text-slate-300">{c.trigger}</span></div>
+                        <div className="flex items-start gap-2"><span className="font-semibold text-blue-400 shrink-0">Then:</span><span className="text-slate-300">{c.action}</span></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 px-8 py-6 border-t border-slate-800">
+              <button onClick={onClose} className="px-6 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg transition-colors text-sm font-medium">Reject Plan</button>
+              <button onClick={onClose} className="px-6 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-lg shadow-emerald-500/20">
+                <span className="w-4 h-4">{icons.checkCircle}</span> Approve & Deploy
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    /* ========== MAP AREA (placeholder) ========== */
+    function MapArea({ robots, selectedId, onSelectRobot }) {
+      const robotList = Object.values(robots);
+      const TIER_COLOR = { manual: "#a1a1aa", assisted: "#38bdf8", supervised: "#fbbf24", autonomous: "#34d399" };
+      const STATUS_COLORS = { active: "#22c55e", idle: "#3b82f6", returning: "#eab308", error: "#ef4444", offline: "#6b7280" };
+
+      return (
+        <div className="absolute inset-0 bg-slate-950 map-grid">
+          {/* Robot markers on map */}
+          {robotList.map((robot) => {
+            const color = STATUS_COLORS[robot.status] || "#6b7280";
+            const tierColor = TIER_COLOR[robot.autonomyTier || "assisted"];
+            const tierLabel = TIER_CONFIG[robot.autonomyTier || "assisted"]?.label || "AST";
+            const isSelected = selectedId === robot.id;
+            // Map position (simplified mapping for demo)
+            const cx = 50 + (robot.position.longitude + 118.246) * 8000;
+            const cy = 50 + (34.055 - robot.position.latitude) * 8000;
+            return (
+              <div key={robot.id} className="absolute cursor-pointer transform -translate-x-1/2 -translate-y-1/2 transition-all duration-500" style={{ left: `${cx}px`, top: `${cy}px` }} onClick={() => onSelectRobot(isSelected ? null : robot.id)}>
+                {isSelected && <div className="absolute inset-0 -m-3 rounded-full border-2 animate-pulse" style={{ borderColor: "#38bdf8", opacity: 0.5 }} />}
+                <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+                  {isSelected && <circle cx="14" cy="14" r="13" fill="none" stroke="#38bdf8" strokeWidth="2" opacity="0.8" />}
+                  {robot.robotType === "drone" ? (
+                    <polygon points="14,3 23,23 14,18 5,23" fill={color} opacity="0.9" />
+                  ) : robot.robotType === "ground" ? (
+                    <><rect x="6" y="8" width="16" height="12" rx="3" fill={color} opacity="0.9" /><circle cx="9" cy="22" r="2.5" fill={color} opacity="0.7" /><circle cx="19" cy="22" r="2.5" fill={color} opacity="0.7" /></>
+                  ) : (
+                    <><ellipse cx="14" cy="14" rx="11" ry="6" fill={color} opacity="0.9" /><polygon points="25,14 28,10 28,18" fill={color} opacity="0.7" /></>
+                  )}
+                </svg>
+                <div className="text-[8px] font-bold tracking-wider text-center mt-0.5 select-none" style={{ color: tierColor, textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>{tierLabel}</div>
+                <div className="text-[9px] text-slate-400 text-center mt-0.5 select-none whitespace-nowrap" style={{ textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>{robot.name}</div>
+              </div>
+            );
+          })}
+
+          {/* Center overlay when no robots visible */}
+          {robotList.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="text-center">
+                <div className="w-16 h-16 bg-slate-800/50 border border-slate-700 rounded-2xl flex items-center justify-center mx-auto mb-4 text-slate-400">{icons.mapPin}</div>
+                <p className="text-slate-200 text-lg font-medium mb-1">Los Angeles</p>
+                <p className="text-slate-500 text-sm">Operations Area</p>
+              </div>
+            </div>
+          )}
+
+          {/* Location badge */}
+          <div className="absolute top-8 left-8 px-4 py-2 bg-slate-800/90 rounded-full border border-slate-700">
+            <span className="text-sm font-medium text-slate-200">Los Angeles, CA</span>
+          </div>
+
+          {/* Zoom controls */}
+          <div className="absolute bottom-8 right-8 flex flex-col gap-2">
+            <button className="w-10 h-10 bg-slate-800 border border-slate-700 rounded-lg shadow-lg flex items-center justify-center hover:bg-slate-700 transition-colors">
+              <span className="text-lg font-light text-slate-300">+</span>
+            </button>
+            <button className="w-10 h-10 bg-slate-800 border border-slate-700 rounded-lg shadow-lg flex items-center justify-center hover:bg-slate-700 transition-colors">
+              <span className="text-lg font-light text-slate-300">&minus;</span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    /* ========== MAIN APP ========== */
+    function App() {
+      const [robots, setRobots] = useState(MOCK_ROBOTS);
+      const [selectedRobotId, setSelectedRobotId] = useState(null);
+      const [tab, setTab] = useState("units");
+      const [searchQuery, setSearchQuery] = useState("");
+      const [filterStatus, setFilterStatus] = useState("all");
+      const [sortBy, setSortBy] = useState("name");
+      const [filterOpen, setFilterOpen] = useState(false);
+      const [sortOpen, setSortOpen] = useState(false);
+      const [alertsOpen, setAlertsOpen] = useState(false);
+      const [settingsOpen, setSettingsOpen] = useState(false);
+      const [missionDialogOpen, setMissionDialogOpen] = useState(false);
+      const [missionReviewOpen, setMissionReviewOpen] = useState(false);
+      const [fleetTier, setFleetTier] = useState("assisted");
+      const [trailsEnabled, setTrailsEnabled] = useState(true);
+      const [connected] = useState(true);
+
+      const selectedRobot = selectedRobotId ? robots[selectedRobotId] : null;
+      const robotList = Object.values(robots);
+      const tierLabel = fleetTier.slice(0, 3).toUpperCase();
+      const activeCount = robotList.filter((r) => r.status === "active").length;
+
+      const changeTier = (robotId, newTier) => {
+        setRobots((prev) => ({ ...prev, [robotId]: { ...prev[robotId], autonomyTier: newTier } }));
+      };
+
+      const filtered = useMemo(() => {
+        let list = robotList;
+        if (filterStatus !== "all") list = list.filter((r) => r.status === filterStatus);
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          list = list.filter((r) => r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q) || r.robotType.toLowerCase().includes(q));
+        }
+        return list;
+      }, [robotList, filterStatus, searchQuery]);
+
+      const sorted = useMemo(() => {
+        const list = [...filtered];
+        switch (sortBy) {
+          case "name": list.sort((a, b) => a.name.localeCompare(b.name)); break;
+          case "status": list.sort((a, b) => (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)); break;
+          case "battery": list.sort((a, b) => (a.health?.batteryPercent ?? 0) - (b.health?.batteryPercent ?? 0)); break;
+          case "type": list.sort((a, b) => a.robotType.localeCompare(b.robotType)); break;
+        }
+        return list;
+      }, [filtered, sortBy]);
+
+      const filterLabel = { all: "All Status", active: "Active", idle: "Idle", returning: "Returning", error: "Error", offline: "Offline" };
+      const sortLabel = { name: "Sort: Name", status: "Sort: Status", battery: "Sort: Battery", type: "Sort: Type" };
+      const pendingSuggestions = MOCK_SUGGESTIONS.filter((s) => s.status === "pending").length;
+
+      return (
+        <div className="flex h-screen bg-slate-950 overflow-hidden">
+          {/* ===== SIDEBAR ===== */}
+          <div className="w-80 bg-slate-900 border-r border-slate-800 flex flex-col shrink-0">
+            {/* Header */}
+            <div className="px-6 pt-6 pb-6 border-b border-slate-800">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h1 className="text-2xl font-semibold text-white">Fleet Command</h1>
+                  <p className="text-sm text-slate-400 mt-1.5">{tierLabel} Operations</p>
+                </div>
+                <button className="p-2 hover:bg-slate-800 rounded-lg transition-colors text-slate-400">{icons.menu}</button>
+              </div>
+              <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border transition-all duration-200 ${connected ? "bg-emerald-500/10 border-emerald-500/20" : "bg-rose-500/10 border-rose-500/20"}`}>
+                <div className={`w-2 h-2 rounded-full transition-colors ${connected ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
+                <span className={`text-sm font-medium ${connected ? "text-emerald-400" : "text-rose-400"}`}>{connected ? "System Connected" : "Offline"}</span>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div className="flex border-b border-slate-800 px-6 gap-2 mt-2">
+              {["units", "analytics", "missions"].map((t) => (
+                <button key={t} onClick={() => setTab(t)} className={`px-4 py-3 text-sm font-medium transition-colors relative rounded-t-lg ${tab === t ? "text-blue-400 bg-slate-800/50" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/30"}`}>
+                  {t.charAt(0).toUpperCase() + t.slice(1)}
+                  {tab === t && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500 rounded-full" />}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab content */}
+            {tab === "units" ? (
+              <>
+                {/* Search + Filter */}
+                <div className="px-6 py-6 border-b border-slate-800 space-y-4">
+                  <div className="relative">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none z-10">{icons.search}</span>
+                    <input type="text" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search units..." className="w-full pl-11 pr-10 py-3 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all" />
+                    {searchQuery && <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-lg font-light">&times;</button>}
+                  </div>
+                  <div className="flex gap-2">
+                    {/* Filter */}
+                    <div className="relative flex-1">
+                      <button onClick={() => { setFilterOpen(!filterOpen); setSortOpen(false); }} className="w-full flex items-center justify-between gap-2 px-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-medium text-slate-300 hover:border-slate-600 transition-all">
+                        <div className="flex items-center gap-2">{icons.filter}<span>{filterLabel[filterStatus]}</span></div>
+                        {icons.chevronDown}
+                      </button>
+                      {filterOpen && (
+                        <div className="absolute top-full left-0 mt-2 w-full bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50 py-1 animate-fade-in">
+                          {["all", "active", "idle", "returning", "error", "offline"].map((s) => (
+                            <button key={s} onClick={() => { setFilterStatus(s); setFilterOpen(false); }} className={`w-full text-left px-3 py-2 text-xs transition-colors ${filterStatus === s ? "text-blue-400 bg-blue-500/10" : "text-slate-300 hover:bg-slate-700"}`}>{filterLabel[s]}</button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {/* Sort */}
+                    <div className="relative flex-1">
+                      <button onClick={() => { setSortOpen(!sortOpen); setFilterOpen(false); }} className="w-full flex items-center justify-between gap-2 px-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-xs font-medium text-slate-300 hover:border-slate-600 transition-all">
+                        <span>{sortLabel[sortBy]}</span>{icons.chevronDown}
+                      </button>
+                      {sortOpen && (
+                        <div className="absolute top-full left-0 mt-2 w-full bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50 py-1 animate-fade-in">
+                          {["name", "status", "battery", "type"].map((s) => (
+                            <button key={s} onClick={() => { setSortBy(s); setSortOpen(false); }} className={`w-full text-left px-3 py-2 text-xs transition-colors ${sortBy === s ? "text-blue-400 bg-blue-500/10" : "text-slate-300 hover:bg-slate-700"}`}>{sortLabel[s]}</button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                {/* Robot list */}
+                <div className="flex-1 overflow-y-auto px-6 py-4 scrollbar-thin">
+                  {sorted.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-center px-4">
+                      <div className="w-20 h-20 bg-gradient-to-br from-blue-500/10 to-indigo-500/10 rounded-2xl flex items-center justify-center mb-5 border border-blue-500/20 text-blue-400">{icons.plane}</div>
+                      <h3 className="text-lg font-semibold text-white mb-2">{robotList.length === 0 ? "No Units Connected" : "No Matches"}</h3>
+                      <p className="text-sm text-slate-400 leading-relaxed">{robotList.length === 0 ? "Waiting for fleet telemetry. Units will appear here once they establish connection." : "Try adjusting your search or filters."}</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {sorted.map((robot) => <RobotRow key={robot.id} robot={robot} isSelected={selectedRobotId === robot.id} onSelect={setSelectedRobotId} />)}
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : tab === "analytics" ? (
+              <div className="flex-1 overflow-y-auto px-4 py-4 scrollbar-thin">
+                <FleetStatsPanel robots={robots} />
+              </div>
+            ) : (
+              <div className="flex-1 overflow-y-auto px-6 py-6 scrollbar-thin">
+                <div className="text-sm text-slate-500 text-center py-10 leading-relaxed">Mission planning available via AI Mission Plan button below.</div>
+              </div>
+            )}
+
+            {/* AI Mission Plan button */}
+            <div className="px-6 py-5 border-t border-slate-800 mt-auto">
+              <button onClick={() => setMissionDialogOpen(true)} className="w-full px-5 py-4 bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-xl font-semibold text-base hover:from-violet-700 hover:to-indigo-700 transition-all shadow-lg shadow-violet-500/25 flex items-center justify-center gap-2.5">
+                <span className="w-5 h-5">{icons.sparkles}</span> AI Mission Plan
+              </button>
+            </div>
+          </div>
+
+          {/* ===== MAIN CONTENT ===== */}
+          <div className="flex-1 flex flex-col min-w-0">
+            {/* Header Bar */}
+            <div className="h-16 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-8 shrink-0">
+              <div className="flex items-center gap-6">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-slate-500">{icons.radio}</span>
+                    <span className="font-medium text-slate-300">{activeCount}</span>
+                    <span className="text-slate-500">active</span>
+                  </div>
+                  <div className="w-px h-4 bg-slate-700" />
+                  <div className="text-sm">
+                    <span className="font-medium text-slate-300">{robotList.length}</span>
+                    <span className="text-slate-500"> total units</span>
+                  </div>
+                </div>
+                <div className="w-px h-4 bg-slate-700" />
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs text-slate-500">Fleet:</span>
+                  <AutonomyBadge tier={fleetTier} size="md" />
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <button onClick={() => { setAlertsOpen(!alertsOpen); setSettingsOpen(false); }}
+                  className={`relative px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 flex items-center gap-2 border ${
+                    alertsOpen ? "bg-amber-500/20 text-amber-300 border-amber-500/30 shadow-lg shadow-amber-500/10"
+                    : pendingSuggestions > 0 ? "bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/15 hover:border-amber-500/30"
+                    : "bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-700 hover:border-slate-600"
+                  }`}>
+                  <span className="w-4 h-4">{icons.alertCircle}</span>
+                  {pendingSuggestions > 0 ? `${pendingSuggestions} Alert${pendingSuggestions > 1 ? "s" : ""}` : "Alerts"}
+                </button>
+                <button className="p-2.5 hover:bg-slate-800 rounded-lg transition-all duration-200 relative group">
+                  <span className="text-slate-400 group-hover:text-slate-300 transition-colors">{icons.bell}</span>
+                  {pendingSuggestions > 0 && <div className="absolute top-1.5 right-1.5 w-2 h-2 bg-red-500 rounded-full animate-pulse" />}
+                </button>
+                <button onClick={() => { setSettingsOpen(!settingsOpen); setAlertsOpen(false); }}
+                  className={`p-2.5 rounded-lg transition-all duration-200 group ${settingsOpen ? "bg-slate-700 text-slate-200" : "hover:bg-slate-800 text-slate-400 hover:text-slate-300"}`}>
+                  <span className="transition-transform group-hover:rotate-45 duration-300 inline-block">{icons.settings}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Map + overlay panels */}
+            <div className="flex-1 relative">
+              <MapArea robots={robots} selectedId={selectedRobotId} onSelectRobot={setSelectedRobotId} />
+              {selectedRobot && <DetailDrawer robot={selectedRobot} onClose={() => setSelectedRobotId(null)} onChangeTier={changeTier} />}
+              <AlertsPanel suggestions={MOCK_SUGGESTIONS} robots={robots} isOpen={alertsOpen} onClose={() => setAlertsOpen(false)} />
+              <SettingsPanel isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} fleetTier={fleetTier} onSetFleetTier={setFleetTier} trailsEnabled={trailsEnabled} onToggleTrails={() => setTrailsEnabled(!trailsEnabled)} />
+              {selectedRobot && <AltitudeInset robot={selectedRobot} alertsOpen={alertsOpen} />}
+            </div>
+          </div>
+
+          {/* Modal overlays */}
+          <MissionPlanDialog open={missionDialogOpen} onClose={() => setMissionDialogOpen(false)} />
+          <MissionPlanReview open={missionReviewOpen} onClose={() => setMissionReviewOpen(false)} />
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
