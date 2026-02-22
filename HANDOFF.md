@@ -25,6 +25,7 @@ Frontend ←→ WebSocket ←→ FastAPI Backend ←→ MQTT ←→ Simulator
 - **AI:** OpenAI GPT-4o for mission planning + command execution (via `backend/app/ai/`)
 - **Voice:** Vapi (voice agent) → Convex (bridge) → FastAPI REST → MQTT
 - **Infra:** Docker Compose (Mosquitto, PostgreSQL/TimescaleDB, backend, frontend, simulator)
+- **Hosting:** Frontend on Vercel, backend local via Docker + SSH tunnel for external access
 
 ---
 
@@ -89,6 +90,15 @@ Frontend ←→ WebSocket ←→ FastAPI Backend ←→ MQTT ←→ Simulator
 - Production nginx config with HTTPS (TLS 1.2+, HSTS, HTTP→HTTPS redirect)
 - Production compose overlay: `docker-compose.prod.yml`
 - `.env.example` template for all required env vars
+
+### Deployment
+- **Frontend (Vercel):** `https://frontend-ruby-gamma-tw5r5icqiu.vercel.app`
+  - Vercel env vars: `VITE_API_URL` (backend tunnel URL), `VITE_WS_URL` (WebSocket tunnel URL)
+  - Deployed as a Vercel **project** with `frontend/vercel.json` (SPA rewrites)
+  - Redeploy needed whenever tunnel URL changes: update Vercel env vars, then `npx vercel --prod`
+- **Backend:** Docker Compose locally, exposed via `localhost.run` SSH tunnel
+  - Tunnel URL changes on every restart — must update Vercel + Convex env vars each time
+- **Convex:** `https://qualified-hound-47.convex.cloud` — env var `ARGUS_BACKEND_URL` must match current tunnel
 
 ### Build Status
 - `npx tsc --noEmit` — **PASS** (zero errors)
@@ -190,8 +200,9 @@ All secrets are read from `.env` at the repo root (gitignored). The Makefile pas
 ### Voice Pipeline Setup
 1. Backend must be accessible from internet (tunnel needed for local dev)
 2. Start tunnel: `ssh -R 80:localhost:8000 nokey@localhost.run`
-3. Update Convex env var: `npx convex env set ARGUS_BACKEND_URL "https://<tunnel-url>" --admin-key "<your-deploy-key>" --url "<your-convex-url>"`
-4. Call +1 (573) 266-6725 to test
+3. Update Convex env var: `CONVEX_DEPLOYMENT="prod:qualified-hound-47" npx convex env set ARGUS_BACKEND_URL "https://<tunnel-url>"`
+4. Update Vercel env vars: remove old `VITE_API_URL`/`VITE_WS_URL`, add new ones, then `npx vercel --prod`
+5. Call +1 (573) 266-6725 to test
 
 ### API Keys & Credentials
 All secrets are stored in `.env` (gitignored) and the Vapi/Convex/ElevenLabs dashboards. **Never commit API keys to this file or any tracked file.**
@@ -243,7 +254,7 @@ All secrets are stored in `.env` (gitignored) and the Vapi/Convex/ElevenLabs das
 4. **Simulator state is in-memory** — robot positions/waypoint queues lost on restart.
 5. **Backend state is in-memory** — robot registry cleared on restart. Simulator re-registers on reconnect.
 6. **OpenAI structured output `strict: True`** requires `additionalProperties: false` on **every** nested object in the schema. For dynamic parameter fields, use `anyOf: [{type: "number"}, {type: "null"}]` with all fields in `required`.
-7. **Vapi assistant tools** must be updated manually via Vapi dashboard to add `executeAICommand` tool definition.
+7. **Vapi assistant tools** were updated via API to include all 6 tools (model: `gpt-4o`). Use Vapi dashboard for future changes.
 8. **Docker Compose `CORS_ORIGINS` default** — never wrap the JSON default in single quotes (e.g., use `${CORS_ORIGINS:-["..."]}` not `${CORS_ORIGINS:-'["..."]'}`). Pydantic receives literal quotes and fails to parse.
 9. **Port conflicts on `make dev`** — if port 5432 (or others) are already allocated, run `docker ps` to find the conflicting container and `docker stop <name>` before retrying.
 10. **Git history was rewritten** (2026-02-22) to remove leaked API keys. All old keys (OpenAI, Vapi, Convex, ElevenLabs) were revoked. Force-push required if remote has old history.
@@ -262,7 +273,7 @@ All secrets are stored in `.env` (gitignored) and the Vapi/Convex/ElevenLabs das
 
 ## Remaining / Future Work
 
-1. **Vapi tool registration:** Add `executeAICommand` tool definition to Vapi assistant via their dashboard
+1. **Persistent backend hosting:** Backend currently runs locally via Docker + SSH tunnel. Deploy to Railway/Fly.io/Render for a stable URL (eliminates tunnel URL rotation).
 2. **CI/CD pipeline:** GitHub Actions for lint, type-check, build, and deploy
 3. **Test coverage:** Integration tests for backend, E2E tests for frontend
 4. **3D visualization:** AltitudeInset component exists, could expand to full 3D view
