@@ -216,7 +216,7 @@ export const useConnectionStore = create<ConnectionStore>()((set) => ({
 // useRobotStore
 // ---------------------------------------------------------------------------
 
-const MAX_TRAIL_POINTS = 200;
+const MAX_TRAIL_POINTS = 60;
 
 interface RobotStore {
   robots: Record<string, RobotState>;
