@@ -28,6 +28,9 @@ import type {
   MissionIntent,
 } from "./lib";
 
+// Shared map handle — MapView populates this so other components can flyTo
+const mapCtrl = { flyTo: (_lng: number, _lat: number, _zoom?: number) => {} };
+
 /* ════════════════════════════════════════════════════════════════════
    MAP STYLE
    ════════════════════════════════════════════════════════════════════ */
@@ -80,6 +83,12 @@ const TYPE_ICON:  Record<string, string> = { drone: "▲", ground: "■", underw
 const TYPE_COLOR: Record<string, string> = { drone: "#00e5a0", ground: "#a78bfa", underwater: "#38bdf8" };
 const SEV_COLOR:  Record<string, string> = { critical: "#ef4444", warning: "#f59e0b", info: "#38bdf8" };
 const AUTONOMY_TIERS: AutonomyTier[]     = ["manual", "assisted", "supervised", "autonomous"];
+const AUTONOMY_ABBR: Record<string, string> = {
+  manual:     "MAN",
+  assisted:   "AID",
+  supervised: "SUP",
+  autonomous: "AUT",
+};
 
 // Command label → UIStore commandMode / sendCommand type
 const DRONE_CMDS      = ["Goto", "Patrol", "Waypoints", "Circle", "Set Home", "Return", "Hold"];
@@ -163,14 +172,58 @@ function StatusPill({ label, active }: { label: string; active: boolean }) {
   );
 }
 
+const TIMEZONES = [
+  { label: "UTC",  tz: "UTC" },
+  { label: "PT",   tz: "America/Los_Angeles" },
+  { label: "MT",   tz: "America/Denver" },
+  { label: "CT",   tz: "America/Chicago" },
+  { label: "ET",   tz: "America/New_York" },
+  { label: "GMT",  tz: "Europe/London" },
+  { label: "CET",  tz: "Europe/Paris" },
+  { label: "GST",  tz: "Asia/Dubai" },
+  { label: "JST",  tz: "Asia/Tokyo" },
+];
+
 function LiveClock() {
-  const [time, setTime] = useState(new Date());
+  const [time,    setTime]    = useState(new Date());
+  const [tzIndex, setTzIndex] = useState(0);
+  const [open,    setOpen]    = useState(false);
+
   useEffect(() => { const t = setInterval(() => setTime(new Date()), 1000); return () => clearInterval(t); }, []);
-  const pad = (n: number) => String(n).padStart(2, "0");
+
+  const { label, tz } = TIMEZONES[tzIndex]!;
+  const formatted = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(time);
+
   return (
-    <span style={{ fontFamily: "monospace", fontSize: 12, color: "#00e5a0", letterSpacing: 2 }}>
-      {pad(time.getUTCHours())}:{pad(time.getUTCMinutes())}:{pad(time.getUTCSeconds())} UTC
-    </span>
+    <div style={{ position: "relative" as const }}>
+      <span
+        onClick={() => setOpen(x => !x)}
+        style={{ fontFamily: "monospace", fontSize: 12, color: "#00e5a0", letterSpacing: 2, cursor: "pointer", userSelect: "none" as const }}
+        title="Click to change timezone"
+      >
+        {formatted} <span style={{ fontSize: 9, color: "#2d6050" }}>{label}</span>
+      </span>
+      {open && (
+        <div style={{ position: "absolute" as const, top: "calc(100% + 8px)", right: 0, background: "#060b13", border: "1px solid #0d1a28", borderRadius: 4, zIndex: 200, minWidth: 120, overflow: "hidden" }}>
+          {TIMEZONES.map((zone, i) => (
+            <div key={zone.tz} onClick={() => { setTzIndex(i); setOpen(false); }}
+              style={{ padding: "7px 14px", cursor: "pointer", fontFamily: "monospace", fontSize: 10, letterSpacing: 1,
+                color: i === tzIndex ? "#00e5a0" : "#4b6080",
+                background: i === tzIndex ? "rgba(0,229,160,0.06)" : "transparent",
+                borderBottom: i < TIMEZONES.length - 1 ? "1px solid #0d1520" : "none",
+              }}
+              onMouseEnter={e => { if (i !== tzIndex) (e.currentTarget as HTMLDivElement).style.background = "rgba(255,255,255,0.03)"; }}
+              onMouseLeave={e => { if (i !== tzIndex) (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+            >
+              <span style={{ color: i === tzIndex ? "#00e5a0" : "#2d4060", marginRight: 8 }}>{zone.label}</span>
+              {new Intl.DateTimeFormat("en-GB", { timeZone: zone.tz, hour: "2-digit", minute: "2-digit", hour12: false }).format(time)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -207,6 +260,8 @@ function FleetStats({ robots }: { robots: RobotState[] }) {
 function RobotRow({ robot, selected, onClick }: { robot: RobotState; selected: boolean; onClick: () => void }) {
   const batt   = robot.health?.batteryPercent ?? 0;
   const signal = robot.health?.signalStrength  ?? 0;
+  const nickname = useUIStore(s => s.robotNicknames[robot.id]);
+  const displayName = nickname || robot.name;
   return (
     <div onClick={onClick}
       style={{ padding: "10px 14px", background: selected ? "rgba(0,229,160,0.05)" : "transparent", borderLeft: selected ? "2px solid #00e5a0" : "2px solid transparent", cursor: "pointer", borderBottom: "1px solid #0d1520", transition: "background 0.12s" }}
@@ -215,8 +270,8 @@ function RobotRow({ robot, selected, onClick }: { robot: RobotState; selected: b
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <span style={{ color: TYPE_COLOR[robot.robotType], fontSize: 10, fontFamily: "monospace" }}>{TYPE_ICON[robot.robotType]}</span>
-        <span style={{ color: "#e2e8f0", fontSize: 12, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{robot.name}</span>
-        <span style={{ fontSize: 9, color: AUTONOMY_COLOR[robot.autonomyTier], fontFamily: "monospace", letterSpacing: 1 }}>{robot.autonomyTier.slice(0, 3).toUpperCase()}</span>
+        <span style={{ color: "#e2e8f0", fontSize: 12, fontWeight: 600, fontFamily: "monospace", flex: 1 }}>{displayName}</span>
+        <span style={{ fontSize: 9, color: AUTONOMY_COLOR[robot.autonomyTier], fontFamily: "monospace", letterSpacing: 1 }}>{AUTONOMY_ABBR[robot.autonomyTier] ?? robot.autonomyTier.slice(0,3).toUpperCase()}</span>
         <div style={{ width: 6, height: 6, borderRadius: "50%", background: STATUS_COLOR[robot.status], boxShadow: robot.status === "active" ? `0 0 6px ${STATUS_COLOR[robot.status]}` : "none" }} />
       </div>
       <BatteryBar pct={batt} />
@@ -317,19 +372,35 @@ function WaypointEditor({ onClose }: { onClose: () => void }) {
    DETAIL PANEL
    ════════════════════════════════════════════════════════════════════ */
 
-function DetailPanel({ robot }: { robot: RobotState }) {
+function DetailPanel({ robot, followedId, onFollowToggle }: { robot: RobotState; followedId: string | null; onFollowToggle: (id: string | null) => void }) {
   const [showWpEditor, setShowWpEditor] = useState(false);
+  const [editingName, setEditingName]   = useState(false);
+  const [nameInput, setNameInput]       = useState("");
+  const [isRecording, setIsRecording]   = useState(false);
 
-  const selectRobot   = useUIStore(s => s.selectRobot);
-  const commandMode   = useUIStore(s => s.commandMode);
-  const setCommandMode = useUIStore(s => s.setCommandMode);
-  const pendingWps    = useUIStore(s => s.pendingWaypoints);
-  const setRobotTier  = useAutonomyStore(s => s.setRobotTier);
-  const sendCommand   = useCommandStore(s => s.sendCommand);
+  const selectRobot      = useUIStore(s => s.selectRobot);
+  const commandMode      = useUIStore(s => s.commandMode);
+  const setCommandMode   = useUIStore(s => s.setCommandMode);
+  const pendingWps       = useUIStore(s => s.pendingWaypoints);
+  const setRobotTier     = useAutonomyStore(s => s.setRobotTier);
+  const sendCommand      = useCommandStore(s => s.sendCommand);
+  const nickname         = useUIStore(s => s.robotNicknames[robot.id]);
+  const setRobotNickname = useUIStore(s => s.setRobotNickname);
 
-  const batt   = robot.health?.batteryPercent ?? 0;
-  const signal = robot.health?.signalStrength ?? 0;
-  const cmds   = robot.robotType === "underwater" ? UNDERWATER_CMDS : robot.robotType === "ground" ? GROUND_CMDS : DRONE_CMDS;
+  const displayName = nickname || robot.name;
+  const batt       = robot.health?.batteryPercent ?? 0;
+  const signal     = robot.health?.signalStrength ?? 0;
+  const cmds       = robot.robotType === "underwater" ? UNDERWATER_CMDS : robot.robotType === "ground" ? GROUND_CMDS : DRONE_CMDS;
+  const isFollowing = followedId === robot.id;
+  const [showSensors, setShowSensors] = useState(false);
+
+  const startRename = () => { setNameInput(displayName); setEditingName(true); };
+  const confirmRename = () => {
+    const trimmed = nameInput.trim();
+    if (trimmed && trimmed !== robot.name) setRobotNickname(robot.id, trimmed);
+    else if (trimmed === robot.name) setRobotNickname(robot.id, "");
+    setEditingName(false);
+  };
 
   const handleCmd = (label: string) => {
     const mapMode = MAP_CMD_MODE[label];
@@ -356,15 +427,44 @@ function DetailPanel({ robot }: { robot: RobotState }) {
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ color: TYPE_COLOR[robot.robotType], fontSize: 14 }}>{TYPE_ICON[robot.robotType]}</span>
-            <span style={{ color: "#e2e8f0", fontSize: 14, fontWeight: 700, fontFamily: "monospace" }}>{robot.name}</span>
+            {editingName ? (
+              <input value={nameInput} onChange={e => setNameInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") confirmRename(); if (e.key === "Escape") setEditingName(false); }}
+                onBlur={confirmRename}
+                autoFocus
+                style={{ color: "#e2e8f0", fontSize: 14, fontWeight: 700, fontFamily: "monospace", background: "#0a1520", border: "1px solid #00e5a0", borderRadius: 2, padding: "1px 6px", outline: "none", width: 140 }}
+              />
+            ) : (
+              <span onClick={startRename} style={{ color: "#e2e8f0", fontSize: 14, fontWeight: 700, fontFamily: "monospace", cursor: "pointer" }} title="Click to rename">
+                {displayName}
+              </span>
+            )}
           </div>
           <div style={{ display: "flex", gap: 6, marginTop: 5 }}>
             <Tag color={STATUS_COLOR[robot.status] ?? "#6b7280"}>{robot.status.toUpperCase()}</Tag>
-            <Tag color={AUTONOMY_COLOR[robot.autonomyTier] ?? "#6b7280"}>{robot.autonomyTier.slice(0, 3).toUpperCase()}</Tag>
+            <Tag color={AUTONOMY_COLOR[robot.autonomyTier] ?? "#6b7280"}>{AUTONOMY_ABBR[robot.autonomyTier] ?? robot.autonomyTier.slice(0,3).toUpperCase()}</Tag>
             <span style={{ fontSize: 9, color: "#2d4060", fontFamily: "monospace", alignSelf: "center" }}>{robot.id}</span>
           </div>
         </div>
-        <button onClick={() => selectRobot(null)} style={{ background: "none", border: "none", color: "#4b6080", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 4 }}>×</button>
+        <div style={{ display: "flex", flexDirection: "column" as const, gap: 4, alignItems: "flex-end" }}>
+          <button onClick={() => selectRobot(null)} style={{ background: "none", border: "none", color: "#4b6080", cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 4 }}>×</button>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button
+              onClick={() => mapCtrl.flyTo(robot.position.longitude, robot.position.latitude, 17)}
+              style={{ fontSize: 7, fontFamily: "monospace", padding: "2px 6px", background: "rgba(56,189,248,0.08)", border: "1px solid rgba(56,189,248,0.2)", color: "#38bdf8", borderRadius: 2, cursor: "pointer", letterSpacing: 1 }}
+              title="Center map on this unit"
+            >CENTER</button>
+            <button
+              onClick={() => onFollowToggle(isFollowing ? null : robot.id)}
+              style={{ fontSize: 7, fontFamily: "monospace", padding: "2px 6px",
+                background: isFollowing ? "rgba(0,229,160,0.12)" : "rgba(0,229,160,0.04)",
+                border: `1px solid ${isFollowing ? "rgba(0,229,160,0.4)" : "rgba(0,229,160,0.15)"}`,
+                color: isFollowing ? "#00e5a0" : "#2d6050",
+                borderRadius: 2, cursor: "pointer", letterSpacing: 1 }}
+              title={isFollowing ? "Stop following" : "Follow this unit"}
+            >{isFollowing ? "◉ FOLLOWING" : "FOLLOW"}</button>
+          </div>
+        </div>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
@@ -401,7 +501,7 @@ function DetailPanel({ robot }: { robot: RobotState }) {
                   border: `1px solid ${active ? AUTONOMY_COLOR[t] : "#0d1a28"}`,
                   color: active ? AUTONOMY_COLOR[t] : "#3a5070",
                   borderRadius: 3, cursor: "pointer", textTransform: "uppercase" as const, transition: "all 0.15s",
-                }}>{t.slice(0, 3)}</button>
+                }}>{AUTONOMY_ABBR[t] ?? t.slice(0,3)}</button>
               );
             })}
           </div>
@@ -450,6 +550,81 @@ function DetailPanel({ robot }: { robot: RobotState }) {
             ))}
           </Section>
         )}
+
+        {/* Sensor data */}
+        <div style={{ marginBottom: 16 }}>
+          <button
+            onClick={() => setShowSensors(x => !x)}
+            style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: showSensors ? 7 : 0 }}
+          >
+            <span style={{ fontSize: 8, color: "#2d4060", fontFamily: "monospace", letterSpacing: 2, textTransform: "uppercase" as const, borderBottom: showSensors ? "1px solid #0d1a28" : "none", paddingBottom: showSensors ? 4 : 0, width: "100%", textAlign: "left" as const }}>
+              SENSORS {showSensors ? "▾" : "▸"}
+            </span>
+          </button>
+          {showSensors && (() => {
+            const meta = robot.metadata ?? {};
+            const sensorKeys = Object.keys(meta);
+            if (sensorKeys.length === 0) {
+              return (
+                <div style={{ fontSize: 9, color: "#2d4060", fontFamily: "monospace", padding: "8px 0", textAlign: "center" as const }}>
+                  NO SENSOR DATA
+                </div>
+              );
+            }
+            return (
+              <div>
+                {sensorKeys.map(key => {
+                  const val = meta[key];
+                  let display: string;
+                  if (val === null || val === undefined) display = "N/A";
+                  else if (typeof val === "number")  display = Number.isInteger(val) ? String(val) : (val as number).toFixed(3);
+                  else if (typeof val === "boolean") display = val ? "TRUE" : "FALSE";
+                  else if (typeof val === "object")  display = JSON.stringify(val).slice(0, 32);
+                  else display = String(val).slice(0, 32);
+                  return <DataRow key={key} label={key.toUpperCase().replace(/_/g, " ")} value={display} />;
+                })}
+              </div>
+            );
+          })()}
+        </div>
+
+        {/* Camera Feed */}
+        {robot.robotType === "drone" && (
+          <Section label="CAMERA FEED">
+            <div style={{ width: "100%", height: 120, background: "#0a1520", border: "1px solid #0d1a28", borderRadius: 3, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 8 }}>
+              <span style={{ fontSize: 18, color: "#1e2a3a" }}>◎</span>
+              <span style={{ fontSize: 8, color: "#2d4060", fontFamily: "monospace", letterSpacing: 1 }}>NO VIDEO SIGNAL</span>
+              <span style={{ fontSize: 7, color: "#1e2a3a", fontFamily: "monospace" }}>AWAITING HARDWARE LINK</span>
+            </div>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button
+                onClick={() => setIsRecording(r => !r)}
+                style={{ flex: 1, padding: "5px 0", fontSize: 8, fontFamily: "monospace", letterSpacing: 1,
+                  background: isRecording ? "rgba(239,68,68,0.12)" : "#0a1520",
+                  border: `1px solid ${isRecording ? "rgba(239,68,68,0.4)" : "#0d1a28"}`,
+                  color: isRecording ? "#ef4444" : "#4b6080",
+                  borderRadius: 2, cursor: "pointer" }}
+              >{isRecording ? "◉ REC" : "RECORD"}</button>
+              <button style={{ flex: 1, padding: "5px 0", fontSize: 8, fontFamily: "monospace", letterSpacing: 1, background: "#0a1520", border: "1px solid #0d1a28", color: "#4b6080", borderRadius: 2, cursor: "not-allowed", opacity: 0.5 }}>
+                SNAPSHOT
+              </button>
+            </div>
+          </Section>
+        )}
+
+        {/* Quick Actions */}
+        <Section label="QUICK ACTIONS">
+          <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={() => sendCommand(robot.id, "return_home")}
+              style={{ flex: 1, padding: "7px 4px", fontSize: 9, fontFamily: "monospace", letterSpacing: 0.5, background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)", color: "#f59e0b", borderRadius: 3, cursor: "pointer" }}>
+              GO HOME
+            </button>
+            <button onClick={() => sendCommand(robot.id, "stop")}
+              style={{ flex: 1, padding: "7px 4px", fontSize: 9, fontFamily: "monospace", letterSpacing: 0.5, background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)", color: "#ef4444", borderRadius: 3, cursor: "pointer" }}>
+              STOP
+            </button>
+          </div>
+        </Section>
       </div>
 
       {showWpEditor && <WaypointEditor onClose={() => setShowWpEditor(false)} />}
@@ -503,7 +678,7 @@ function RobotMarker({ robot }: { robot: RobotState }) {
       <div onClick={handleClick} style={{ cursor: "pointer" }}>
         <div style={{ transform: `rotate(${cumulativeRotation.current}deg)` }} dangerouslySetInnerHTML={{ __html: svgHtml }} />
         <div style={{ fontSize: 7, fontFamily: "monospace", textAlign: "center" as const, marginTop: 1, color: AUTONOMY_COLOR[robot.autonomyTier], textShadow: "0 1px 3px rgba(0,0,0,0.9)", letterSpacing: 1 }}>
-          {robot.autonomyTier.slice(0, 3).toUpperCase()}
+          {AUTONOMY_ABBR[robot.autonomyTier] ?? robot.autonomyTier.slice(0,3).toUpperCase()}
         </div>
       </div>
     </Marker>
@@ -561,7 +736,7 @@ function PendingWaypointLayer() {
    MAP VIEW
    ════════════════════════════════════════════════════════════════════ */
 
-function MapView() {
+function MapView({ followedId }: { followedId: string | null }) {
   const mapRef     = useRef<MapRef>(null);
   const robots     = useRobotStore(s => s.robots);
   const robotList  = Object.values(robots);
@@ -571,6 +746,35 @@ function MapView() {
   const setCircleCenter = useUIStore(s => s.setCircleCenter);
   const selectedId = useUIStore(s => s.selectedRobotId);
   const sendCommand = useCommandStore(s => s.sendCommand);
+
+  // Populate shared mapCtrl handle once map loads
+  const handleMapLoad = useCallback(() => {
+    mapCtrl.flyTo = (lng, lat, zoom = 17) => {
+      mapRef.current?.flyTo({ center: [lng, lat], zoom, duration: 800, essential: true });
+    };
+  }, []);
+
+  // Fly to robot when selected
+  useEffect(() => {
+    if (!selectedId) return;
+    const robot = useRobotStore.getState().robots[selectedId];
+    if (robot) mapCtrl.flyTo(robot.position.longitude, robot.position.latitude, 17);
+  }, [selectedId]);
+
+  // Follow mode — re-center every second while following
+  useEffect(() => {
+    if (!followedId) return;
+    const t = setInterval(() => {
+      const robot = useRobotStore.getState().robots[followedId];
+      if (robot) {
+        mapRef.current?.easeTo({
+          center: [robot.position.longitude, robot.position.latitude],
+          duration: 800, essential: true,
+        });
+      }
+    }, 1000);
+    return () => clearInterval(t);
+  }, [followedId]);
 
   const handleMapClick = useCallback((e: MapLayerMouseEvent) => {
     if (commandMode === "none") return;
@@ -606,6 +810,7 @@ function MapView() {
       mapStyle={DARK_STYLE as any}
       cursor={cursor}
       onClick={handleMapClick}
+      onLoad={handleMapLoad}
     >
       <NavigationControl position="bottom-right" />
       <PendingWaypointLayer />
@@ -620,7 +825,6 @@ function MapView() {
 
 function AlertCard({ suggestion }: { suggestion: Suggestion }) {
   const [expanded, setExpanded]   = useState(false);
-  const approveSuggestion         = useAIStore(s => s.approveSuggestion);
   const rejectSuggestion          = useAIStore(s => s.rejectSuggestion);
 
   const sc   = SEV_COLOR[suggestion.severity] ?? "#38bdf8";
@@ -650,12 +854,7 @@ function AlertCard({ suggestion }: { suggestion: Suggestion }) {
         <button onClick={() => setExpanded(x => !x)} style={{ background: "none", border: "none", fontSize: 8, color: "#2d4060", cursor: "pointer", fontFamily: "monospace" }}>{expanded ? "LESS" : "MORE"}</button>
         <div style={{ flex: 1 }} />
         {!done && (
-          <>
-            <button onClick={() => rejectSuggestion(suggestion.id)} style={{ fontSize: 8, fontFamily: "monospace", padding: "3px 8px", background: "transparent", border: "1px solid #1e2a3a", color: "#4b6080", borderRadius: 2, cursor: "pointer" }}>DISMISS</button>
-            {suggestion.proposedAction && (
-              <button onClick={() => approveSuggestion(suggestion.id)} style={{ fontSize: 8, fontFamily: "monospace", padding: "3px 8px", background: `${sc}18`, border: `1px solid ${sc}40`, color: sc, borderRadius: 2, cursor: "pointer" }}>APPROVE</button>
-            )}
-          </>
+          <button onClick={() => rejectSuggestion(suggestion.id)} style={{ fontSize: 8, fontFamily: "monospace", padding: "3px 8px", background: "transparent", border: "1px solid #1e2a3a", color: "#4b6080", borderRadius: 2, cursor: "pointer" }}>DISMISS</button>
         )}
       </div>
     </div>
@@ -1023,6 +1222,7 @@ export default function App() {
   useKeyboardShortcuts();
 
   const [plannerOpen, setPlannerOpen] = useState(false);
+  const [followedId, setFollowedId]  = useState<string | null>(null);
   const selectedId    = useUIStore(s => s.selectedRobotId);
   const robots        = useRobotStore(s => s.robots);
   const selectedRobot = selectedId ? robots[selectedId] : null;
@@ -1033,8 +1233,8 @@ export default function App() {
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
         <RobotListPanel />
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
-          <MapView />
-          {selectedRobot && <DetailPanel robot={selectedRobot} />}
+          <MapView followedId={followedId} />
+          {selectedRobot && <DetailPanel robot={selectedRobot} followedId={followedId} onFollowToggle={setFollowedId} />}
           <AlertsPanel onOpenPlanner={() => setPlannerOpen(true)} />
         </div>
       </div>

@@ -398,6 +398,10 @@ interface UIStore {
   aiLocked: Record<string, boolean>;
   toggleAiLock: (robotId: string) => void;
 
+  // Robot nicknames (client-side renaming)
+  robotNicknames: Record<string, string>;
+  setRobotNickname: (robotId: string, name: string) => void;
+
   selectRobot: (id: string | null) => void;
   setCommandMode: (mode: CommandMode) => void;
   toggleAlertsPanel: () => void;
@@ -460,6 +464,13 @@ export const useUIStore = create<UIStore>()((set) => ({
   toggleAiLock: (robotId) =>
     set((s) => ({
       aiLocked: { ...s.aiLocked, [robotId]: !s.aiLocked[robotId] },
+    })),
+
+  // Robot nicknames
+  robotNicknames: {},
+  setRobotNickname: (robotId, name) =>
+    set((s) => ({
+      robotNicknames: { ...s.robotNicknames, [robotId]: name },
     })),
 
   selectRobot: (id) =>
